@@ -1,0 +1,339 @@
+---
+title: "Tutorial: Central Posterior Envelopes (CPEs) for Functional Components in Bayesian Longitudinal Functional Principal Component (B-LFPCA) Model"
+output: html_document
+---
+
+## Description 
+A step-by-step implementation of the functional depth based central posterior envelopes (CPEs) for posterior functional components in the Bayesian longitudinal functional principal component analysis (B-LFPCA) model detailed in "Central posterior envelopes for Bayesian longitudinal functional principal component analysis" by Boland et al. (2024). 
+This procedure assumes that the data is comprised of densely observed longitudinal functional observations. 
+
+## Functions Implemented
+B_LFPCA_CPE_simulateData.R, B_LFPCA_CPE_MCMC.R, B_LFPCA_CPE_postSumms.R, B_LFPCA_CPEcontour.R, and B_LFPCA_muCPEcontour.R
+
+## Tutorial Outline 
+1. Simulate longitudinal functional data using the product FPCA model (B_LFPCA_CPE_simulateData.R)
+2. MCMC to obtain posterior estimates (B_LFPCA_CPE_MCMC.R)
+3. Calculate traditional and proposed depth-based posterior summaries (B_LFPCA_CPE_postSumms.R)
+4. Visualization of CPE contours for functional model components, including the mean function, longitudinal/functional eigenfunctions (B_LFPCA_CPE_muCPEcontour.R, B_LFPCA_CPE_CPEcontour.R)
+
+```{r, warning = FALSE, message = FALSE}
+# Install missing packages
+list.of.packages <- c('gridExtra', 'cowplot', 'latex2exp', 'tidyverse', 'reshape2',
+                      'viridis', 'splines', 'Rcpp', 'acid', 'pracma', 'expm', 'MASS',
+                      'LFBayes')
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages) 
+
+# Load packages
+library(gridExtra)
+library(cowplot)
+library(latex2exp)
+library(tidyverse)
+library(reshape2)
+library(viridis)
+library(splines)
+library(Rcpp)
+library(acid)
+library(pracma)
+library(expm)
+library(MASS)
+library(LFBayes)
+
+# Set work directory
+setwd("~/Desktop/Github")
+
+# Load R functions
+source("B_LFPCA_CPE_simulateData.R")
+source("B_LFPCA_CPE_MCMC.R")
+source("B_LFPCA_CPE_postSumms.R")
+source("B_LFPCA_CPE_CPEcontour.R")
+source("B_LFPCA_CPE_muCPEcontour.R")
+```
+
+## 1. Simulate functional data using the standard FPCA model
+
+In this tutorial, the generated function data contain observations for $n = 30$ 
+subjects comprised of values $Y_i(s_j,t_k)$ at $SS = 20$ equidistant longitudinal
+time points within $s \in [0, 1]$ and $TT = 20$ equidistant functinal time points
+within$t \in [0, 1]$. The longitudinal functional data are generated from the 
+standard product FPCA model corresponding  to the simulation case 1 in which no 
+outliers are generated. The model components used to generate the data are detailed 
+in Supplementary Materials Appendix C. 
+
+```{r, warning = FALSE, message = FALSE}
+# Define parameters in the simulated model in Case 1
+# Number of longitudinal and functional time points
+SS <- 20; TT <- 20
+
+# Longitudinal and functional time points
+s <- seq(from = 0, to = 1, length.out = SS) # vector, SS x 1
+t <- seq(from = 0, to = 1, length.out = TT) # vector, TT x 1
+
+# Number of longitudinal and functional eigen-components
+J <- 2; K <- 2
+
+# Number of subjects 
+n <- 30
+
+set.seed(999)
+simulatedData <- simulateData(n  = 30, # Number of subjects (scalar)
+                              SS = 20, # Number of functional time points (scalar)
+                              TT = 20) # Number of longitudinal time points (scalar)
+# Simulated data
+Y <- simulatedData$y
+
+# True functions
+truth_funcs <- simulatedData$truth_funcs
+```
+
+## 2. MCMC to obtain posterior estimates 
+
+We obtain the $C = 6000$ posterior estimates for the model parameters and components 
+utilizing the B-LFPCA modeling framework using $p_1 = p_2 = 11$ B-spline basis functions and 
+$q_1 = q_2 = 4$ latent components. The posterior estimates are obtained from the Gibbs sampler 
+described in Supplementary Materials Appendix A using 4 MCMC chains, with each consisting of 
+10,000 MCMC iterations. Of these, the first 2,500 iterations were discarded as burn-in, and 
+thinning was applied every 5th iteration. 
+
+```{r, cache = TRUE, warning = FALSE, message = FALSE}
+# Note: For n = 30, SS = 20, TT = 20, p_1 = p_2 = 11, and q_1 = q_2 = 4, running four MCMC 
+#       chain with 10,000 iterations takes approximately 1 hour
+
+# MCMC parameters
+## Number of B-spline basis functions
+p1 <- p2 <- 11
+
+## Number of latent components
+q1 <- q2 <- 4
+
+## Number of MCMC chains, number of total iterations, iterations used as burn-in, and thinning number in each chain
+nchain <- 4
+iter <- 10000
+burnin <- 2500
+thin <- 5
+
+# MCMC
+posterior_samples <-   MCMC(Y,           # List of simulated functional data, each list contains a vector of Y_i(s, t)                                              (list, (SS x TT) x 1 x n )
+                            n,           # Number of subjects (scalar)
+                            SS,          # Number of functional time points (scalar)
+                            TT,          # Number of longitudinal time points (scalar)
+                            p1,          # Number of longitudinal basis functions (integer)
+                            p2,          # Number of functional basis functions (integer)
+                            q1,          # Number of longitudinal latent functions (integer)
+                            q2,          # Number of functional latent functions (integer)
+                            nchain,      # Number of MCMC chains (integer)
+                            iter,        # Total number of iterations in each MCMC chain (integer)
+                            burnin,      # Number of iterations used for burn-in (integer, 0-iter)
+                            thin)        # Number of thinning (integer)
+
+```
+
+## 3. Calculate traditional and proposed posterior summaries 
+
+```{r, cache = TRUE, warning = FALSE, message = FALSE}
+# Note: For n = 30, SS = 20, TT = 20, p_1 = p_2 = 11, and q_1 = q_2 = 4, running summaries with 6,000 posterior samples takes approximately 4 hours
+
+# Set parameters
+# Number of eigencomponent retained
+neig <- 2
+
+# Alpha-level
+alpha <- 0.05
+
+# Calculate posterior summaries
+posterior_summaries <- postSumms(posterior_samples, # Output object from MCMC() of FDpostSumms_BLFPCA_MCMC.R
+                                 neig,              # Number of eigencomponents (integer) 
+                                 n,                 # Number of subjects (scalar)
+                                 SS,                # Number of functional time points (scalar)
+                                 TT,                # Number of longitudinal time points (scalar)
+                                 p1,                # Number of longitudinal basis functions (integer)
+                                 p2,                # Number of functional basis functions (integer)
+                                 q1,                # Number of longitudinal latent functions (integer)
+                                 q2,                # Number of functional latent functions (integer)
+                                 nchain,            # Number of MCMC chains (integer)
+                                 iter,              # Total number of iterations in each MCMC chain (integer)
+                                 burnin,            # Number of iterations used for burn-in (integer, 0-iter)
+                                 thin,              # Number of thinning (integer)
+                                 alpha              # Alpha-level of (1 - alpha)100% credible intervals and central                                                            posterior envelopes (scalar, 0-1)
+)                           
+```
+
+## 4. CPE contour visualizations for functional model components
+
+The following codes are make CPE contour plots for different types of CPE contours for eigenfunctions in Case 1 for a single simulation ran. In the figures, the posterior sample is displayed as solid grey lines, and each $alpha$-level contour corresponds for the corresponding MBD- or marginal MVD- or kernel MVD-CPEs to the color given in the legend. The solid black line represents either the MBD median or MVD median. 
+
+### longitudinal Eigenfunctions
+
+```{r, warning = FALSE, message = FALSE}
+contour_case1_psi1_mbd <- CPEcontour(
+                       post_samples = posterior_summaries,      # Outputs from FDpostSumms_BLFPCA_postSumms.R
+                       type = "long_eigen",                     # Type of eigenfunctions: "long_eigen" or "func_eigen".
+                       jork = 1,                                # Index for the eigenfunctions: 1, 2, or 3
+                       CPE = "MBD",                             # Type of CPE calculated and plotted: "MBD", "Marginal                                                                     MVD", or "Kernel MVD"    
+                       alpha_cont = seq(0.05, 0.95, by = 0.10), # alpha values for the CPE contours, a vector of real                                                                      numbers
+                       sort = s,                                # To denote the longitudinal (s) or functional (t)                                                                         dimension
+                       title = TeX(r"((a) Case 1, MBD-CPEs)"),  # Title given to the plot, charactors
+                       xlab = "Time (s)"                        # X-axis label, characters
+                       )
+
+contour_case1_psi1_mvd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "long_eigen", 
+                                     jork = 1, 
+                                     CPE = "Marginal MVD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                     sort = s, 
+                                     title = TeX(r"((b) Case 1, MVD-CPEs)"), 
+                                     xlab = "Time (s)")
+
+contour_case1_psi1_kmvd <- CPEcontour(post_samples = posterior_summaries, 
+                                      type = "long_eigen", 
+                                      jork = 1, 
+                                      CPE = "Kernel MVD", 
+                                      alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                      sort = s, 
+                                      title = TeX(r"((c) Case 1, Kernel MVD-CPEs)"), 
+                                      xlab = "Time (s)")
+
+contour_case1_psi2_mbd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "long_eigen", 
+                                     jork = 2, 
+                                     CPE = "MBD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                     sort = s, 
+                                     title = TeX(r"((a) Case 1, MBD-CPEs)"), 
+                                     xlab = "Time (s)")
+
+contour_case1_psi2_mvd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "long_eigen", 
+                                     jork = 2, 
+                                     CPE = "Marginal MVD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                     sort = s, 
+                                     title = TeX(r"((b) Case 1, MVD-CPEs)"), 
+                                     xlab = "Time (s)")
+
+contour_case1_psi2_kmvd <- CPEcontour(post_samples = posterior_summaries, 
+                                      type = "long_eigen", 
+                                      jork = 2, 
+                                      CPE = "Kernel MVD", 
+                                      alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                      sort = s, 
+                                      title = TeX(r"((c) Case 1, Kernel MVD-CPEs)"), 
+                                      xlab = "Time (s)")
+
+```
+
+
+### Functional Eigenfunctions
+
+```{r, warning = FALSE, message = FALSE}
+contour_case1_phi1_mbd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "func_eigen", 
+                                     jork = 1, 
+                                     CPE = "MBD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10),
+                                     sort = t, 
+                                     title = TeX(r"((a) Case 1, MBD-CPEs)"), 
+                                     xlab = "Time (t)")
+
+contour_case1_phi1_mvd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "func_eigen", 
+                                     jork = 1, 
+                                     CPE = "Marginal MVD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10),
+                                     sort = t, 
+                                     title = TeX(r"((b) Case 1, MVD-CPEs)"), 
+                                     xlab = "Time (t)")
+
+contour_case1_phi1_kmvd <- CPEcontour(post_samples = posterior_summaries, 
+                                      type = "func_eigen", 
+                                      jork = 1, 
+                                      CPE = "Kernel MVD", 
+                                      alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                      sort = t, 
+                                      title = TeX(r"((c) Case 1, Kernel MVD-CPEs)"), 
+                                      xlab = "Time (t)")
+
+contour_case1_phi2_mbd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "func_eigen", 
+                                     jork = 2, 
+                                     CPE = "MBD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                     sort = t, 
+                                     title = TeX(r"((a) Case 1, MBD-CPEs)"), 
+                                     xlab = "Time (t)")
+
+contour_case1_phi2_mvd <- CPEcontour(post_samples = posterior_summaries, 
+                                     type = "func_eigen", 
+                                     jork = 2, 
+                                     CPE = "Marginal MVD", 
+                                     alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                     sort = t, 
+                                     title = TeX(r"((b) Case 1, MVD-CPEs)"), 
+                                     xlab = "Time (t)")
+
+contour_case1_phi2_kmvd <- CPEcontour(post_samples = posterior_summaries, 
+                                      type = "func_eigen", 
+                                      jork = 2, 
+                                      CPE = "Kernel MVD", 
+                                      alpha_cont = seq(0.05, 0.95, by = 0.10), 
+                                      sort = t, 
+                                      title = TeX(r"((c) Case 1, Kernel MVD-CPEs)"), 
+                                      xlab = "Time (t)")
+
+```
+
+
+### Visualization of MVD-CPE contours of the mean function 
+
+Plotted at different $\alpha$ levels marked by varying colors, overlaid with $C = 6000$ posterior estimates in gray. To visualize the MVD-CPE contours, the CPEs of the mean function are displayed in functional time (t) at fixed
+slices of longitudinal time $s \in \mathcal{S}$ (i.e. ($\mu(t|s)$) for the $n_s = 20$ total time points. The solid black line represents the MVD median, denoted by $\widetilde{m}\{\mu(s, t)\}$, and the solid red line represents the true function.
+
+```{r, warning = FALSE, message = FALSE, fig.height=15, fig.width=18}
+muCPEcontour(post_samples = posterior_summaries,        # Outputs from FDpostSumms_BLFPCA_postSumms.R
+               alpha_cont = seq(0.05, 0.95, by = 0.10), # Vector of alpha values for the CPE contours, a vector of real                                                            numbers
+                        s = seq(0, 1, length = 20),     # Vector of longitudinal time points to be plotted, a                                                                      vector of real numbers
+                        t = seq(0, 1, length = 20)      # Vector of functional time points to be plotted, a                                                                        vector of real numbers
+)
+```
+
+
+### Visualization of CPE contours of longtudinal and functional eigenfunctions
+
+```{r, warning = FALSE, message = FALSE, fig.height=11, fig.width=12}
+cols <- viridis::viridis(n = 10)
+# Generate a dataset and plot to obtain legend
+df <- data.frame(x = rnorm(1000, sd = 100), y = rnorm(1000, sd = 100))
+grid <- ggplot(df, aes(x = x, y = y)) +
+  geom_density_2d_filled(bins = 10) +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title=element_text(size=12),
+        legend.text = element_text(size = 11),
+        legend.title = element_text(size = 13),
+        legend.background = element_rect(colour = 'black', fill = 'white', 
+                                         linetype='solid'),
+        axis.text=element_text(size=12)) +
+  scale_fill_manual(values =  cols, 
+                    labels = c(as.character(seq(0.05, 0.95, by = 0.1)))) +
+  guides(fill=guide_legend(title=TeX(r'($\alpha$ level)')))
+legend <- get_legend(grid)
+
+# Make plots of CPE contours
+ggdraw() +
+  draw_plot(contour_case1_psi1_mbd , x = 0, y = 1 - 1/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_psi1_mvd , x = 0.3, y = 1 - 1/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_psi1_kmvd , x = 0.6, y = 1 - 1/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_psi2_mbd , x = 0, y = 1 - 2/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_psi2_mvd , x = 0.3, y = 1 - 2/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_psi2_kmvd , x = 0.6, y = 1 - 2/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi1_mbd , x = 0, y = 1 - 3/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi1_mvd , x = 0.3, y = 1 - 3/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi1_kmvd , x = 0.6, y = 1 - 3/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi2_mbd , x = 0, y = 1 - 4/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi2_mvd , x = 0.3, y = 1 - 4/4, width = 0.3 - 0.01, height = 1/4) +
+  draw_plot(contour_case1_phi2_kmvd , x = 0.6, y = 1 - 4/4, width = 0.3 - 0.01, height = 1/4) 
+  draw_grob(legend, x = 0.9, y = 0.25, width = 0.1 - 0.01, height = 0.5)
+
+```
+
